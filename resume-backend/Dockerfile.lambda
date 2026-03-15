@@ -1,0 +1,15 @@
+# Lambda version — currently non-functional
+# Reason: Tectonic downloads LaTeX packages at runtime
+# Lambda blocks outbound internet access
+# See: devops/doc/serverless-attempt.md
+
+FROM public.ecr.aws/lambda/nodejs:22
+
+COPY --from=sriharshareddy6464/pdf-server:latest /usr/local/bin/tectonic /usr/local/bin/tectonic
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+CMD ["lambda.handler"]

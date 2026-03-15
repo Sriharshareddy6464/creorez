@@ -1,0 +1,5 @@
+### `.dockerignore` — make sure Lambda dockerfile is ignored during EC2 builds:
+```
+node_modules/
+.env
+Dockerfile.lambda

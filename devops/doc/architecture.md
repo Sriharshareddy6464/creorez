@@ -8,6 +8,7 @@ Creorez is a full-stack AI-powered resume builder consisting of:
 - **Backend** — Node.js microservice deployed on **AWS EC2**
 - **Core Engine** — LaTeX → PDF resume generation via Tectonic
 - **Container** — Dockerized backend for portability and reproducibility
+- **IaC** — Terraform for infrastructure provisioning
 - **CI/CD** — GitHub Actions for automated builds and deployments
 - **Monitoring** — CloudWatch (optional, re-enable in production)
 
@@ -32,6 +33,7 @@ Creorez is a full-stack AI-powered resume builder consisting of:
                  ┌────────────────────────────────┐
                  │   AWS EC2 (Ubuntu 24.04)        │
                  │   Region: ap-northeast-1        │
+                 │   Provisioned by Terraform      │
                  │  ┌──────────────────────────┐  │
                  │  │   Nginx (Port 80)         │  │
                  │  │   Reverse Proxy           │  │
@@ -54,6 +56,33 @@ Creorez is a full-stack AI-powered resume builder consisting of:
 
 ---
 
+## ✅ Terraform Infrastructure Architecture
+```
+Developer runs terraform apply
+            ↓
+    Terraform provisions:
+  ┌───────────────────────────────┐
+  │  1. EC2 Instance              │
+  │  2. Security Group            │
+  │  3. Elastic IP Association    │
+  │  4. IAM Role + Profile        │
+  │  5. ECR Repository            │
+  └──────────────┬────────────────┘
+                 ↓
+      EC2 user_data runs automatically:
+  ┌───────────────────────────────┐
+  │  6. Install Docker + Nginx    │
+  │  7. Install Tectonic          │
+  │  8. Pull DockerHub image      │
+  │  9. Start PDF container       │
+  │  10. Configure Nginx          │
+  └───────────────────────────────┘
+                 ↓
+    Zero manual server setup ✅
+```
+
+---
+
 ## ✅ CI/CD Pipeline Architecture
 ```
 Developer pushes to main (resume-backend/)
@@ -66,7 +95,7 @@ Developer pushes to main (resume-backend/)
   │  4. Push to DockerHub     │
   └──────────┬────────────────┘
              ↓
-      SSH into EC2
+      SSH into EC2 (same Elastic IP always)
   ┌───────────────────────────┐
   │  5. Pull latest image     │
   │  6. Remove old container  │
@@ -96,9 +125,20 @@ Developer pushes to main (resume-backend/)
 | **Tectonic** | Lightweight LaTeX → PDF engine (70-100MB vs TeXLive 3GB+) |
 | **Docker** | Containerizes entire backend — portable and reproducible |
 | **Nginx** | Reverse proxy, routes port 80 → Docker container port 3001 |
-| **Elastic IP** | Permanent static IP — survives EC2 reboots |
+| **Elastic IP** | Permanent static IP — survives EC2 reboots and terraform rebuilds |
 
-### **3. CI/CD (GitHub Actions)**
+### **3. Terraform (IaC)**
+
+| Resource | Purpose |
+|----------|---------|
+| `aws_instance` | EC2 server provisioning |
+| `aws_security_group` | Firewall rules as code |
+| `aws_eip` (data) | Reference existing static IP |
+| `aws_eip_association` | Attach static IP to EC2 |
+| `aws_iam_role` | EC2 permissions |
+| `aws_ecr_repository` | Private Docker registry |
+
+### **4. CI/CD (GitHub Actions)**
 
 | Step | Action |
 |------|--------|
@@ -108,14 +148,22 @@ Developer pushes to main (resume-backend/)
 | Deploy | SSH into EC2 → pull image → restart container |
 | Manual | `workflow_dispatch` for manual triggers |
 
-### **4. DockerHub Backup**
+### **5. DockerHub Backup**
 
 | Item | Value |
 |------|-------|
 | Image | `sriharshareddy6464/pdf-server:latest` |
 | Purpose | Backup — restore entire backend in under 10 minutes |
 
-### **5. Monitoring (CloudWatch — Optional)**
+### **6. ECR Registry**
+
+| Item | Value |
+|------|-------|
+| Repository | `cloud/creorez-latex` |
+| Region | ap-northeast-1 (Tokyo) |
+| Purpose | Private AWS registry for future EKS migration |
+
+### **7. Monitoring (CloudWatch — Optional)**
 
 > 💡 Disabled in alpha stage to reduce costs. Re-enable in production.
 
@@ -149,26 +197,26 @@ Frontend (Vercel)
 ### **Backend**
 - Hosted on **AWS EC2** (Ubuntu 24.04, t3.micro, 32GB gp3)
 - Region: Asia Pacific Tokyo (ap-northeast-1)
-- Elastic IP for permanent addressing
+- Provisioned entirely by **Terraform**
+- Elastic IP for permanent addressing — never changes
 - Dockerized — `--restart always` handles crashes and reboots
 - Nginx reverse proxy on port 80
-- GitHub Actions handles all deployments automatically
+- GitHub Actions handles all code deployments automatically
 
 ---
 
 ## ✅ DevOps Workflow
 
-1. Launch EC2 → assign Elastic IP
-2. Install Docker + Node.js + Tectonic dependencies
-3. Build Docker image from Dockerfile
-4. Run container with `--restart always`
-5. Configure Nginx reverse proxy
-6. Push image to DockerHub as backup
-7. Set up GitHub Actions CI/CD pipeline
-8. Open ports 22 / 80 / 443 / 3001 in Security Group
-9. Test via curl and browser
-10. Share endpoint with frontend team
-11. All future deployments → push to main → auto deploy ✅
+### Infrastructure (Terraform — run once):
+1. `terraform init`
+2. `terraform plan`
+3. `terraform apply` → entire infra provisioned automatically
+
+### Code Deployment (GitHub Actions — automatic):
+1. Push code to `main`
+2. Pipeline triggers automatically
+3. New Docker image built and deployed
+4. Zero manual work ✅
 
 ---
 
@@ -181,7 +229,8 @@ Frontend (Vercel)
 - No credentials or secrets committed to Git
 - Real IPs and keys never in version control
 - GitHub Secrets used for all sensitive pipeline values
-- IAM Role scoped to CloudWatch only (`CloudWatchAgentServerPolicy`)
+- IAM Role scoped to CloudWatch + ECR only
+- Terraform state files excluded from Git
 
 ---
 
@@ -189,37 +238,28 @@ Frontend (Vercel)
 
 If EC2 is lost or terminated:
 ```bash
-# 1. Launch new EC2
-# 2. Install Docker
-sudo apt install -y docker.io
-sudo systemctl start docker
+# 1. Run Terraform — entire infra rebuilds automatically
+terraform apply
 
-# 3. Pull image from DockerHub
-docker pull sriharshareddy6464/pdf-server:latest
-
-# 4. Run container
-docker run -d --name pdf-server --restart always -p 3001:3001 sriharshareddy6464/pdf-server:latest
-
-# 5. Setup Nginx
+# 2. Same Elastic IP reassigned automatically
+# 3. Docker container starts automatically via user_data
+# 4. GitHub Actions CI/CD resumes automatically
 # Back online in under 10 minutes ✅
-
-# 6. Update EC2_HOST secret in GitHub
-# CI/CD pipeline resumes automatically ✅
 ```
 
 ---
 
-## 🔜 Upcoming Architecture (Phase 2)
+## 🔜 Upcoming Architecture (Phase 3)
 ```
-Current (Phase 1)          Upcoming (Phase 2)
-─────────────────          ──────────────────
-Single EC2           →     EKS (Kubernetes)
-Docker run           →     Helm Charts + Pods
-Manual infra         →     Terraform (IaC)
-Nginx                →     Ingress Controller
-CloudWatch           →     Prometheus + Grafana
-HTTP only            →     HTTPS (SSL via Let's Encrypt)
-GitHub Actions       →     Full GitOps pipeline
+Current (Phase 2)              Upcoming (Phase 3)
+──────────────────             ──────────────────
+Single EC2             →       EKS (Kubernetes)
+Docker run             →       Helm Charts + Pods
+Terraform EC2          →       Terraform EKS
+Nginx                  →       Ingress Controller
+CloudWatch             →       Prometheus + Grafana
+HTTP only              →       HTTPS (SSL via Let's Encrypt)
+DockerHub              →       ECR (private registry)
 ```
 
 ---
@@ -230,8 +270,11 @@ GitHub Actions       →     Full GitOps pipeline
 - `aws-setup.md` — AWS configuration guide
 - `server-setup.md` — server operations guide
 - `docker-setup.md` — Docker and container guide
+- `terraform-setup.md` — Terraform IaC guide
+- `serverless-attempt.md` — Lambda migration attempt
 - `configs/nginx.conf` — Nginx configuration
 - `.github/workflows/deploy.yml` — CI/CD pipeline
+- `terraform/` — complete IaC configuration
 
 ---
 
@@ -243,9 +286,11 @@ Responsibilities:
 - Designed and provisioned AWS EC2 architecture
 - Containerized backend using Docker
 - Configured Nginx reverse proxy
+- Implemented Terraform IaC for full infrastructure automation
 - Implemented GitHub Actions CI/CD pipeline
-- Implemented DockerHub backup strategy
+- Implemented DockerHub + ECR backup strategy
 - Assigned Elastic IP for permanent availability
+- Attempted serverless migration (Lambda + ECR)
 - Set up CloudWatch monitoring and alerting
 - Connected backend with Vercel frontend
-- Entire Phase 1 setup completed from mobile (Android + Termius)
+- Phase 1 setup completed from mobile (Android + Termius)
